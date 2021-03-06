@@ -146,7 +146,7 @@ class DigitalDetector:
         )
 
         H, W = np.shape(thresh)
-        labels_nbr, labels = cv2.connectedComponents(255-thresh, connectivity=8,)
+        labels_nbr, labels = cv2.connectedComponents(255-thresh, connectivity=8)
 
         def clean_connected(i, j, thresh):
             if thresh[i, j] == 0:
@@ -170,18 +170,21 @@ class DigitalDetector:
         """
         Returns the rectangular bounding box of each digit on the given image
         """
-        img = img.copy()
-        contours = cv2.findContours(img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        contours = imutils.grab_contours(contours)
+        H, W = np.shape(img)
+        labels_nbr, labels, stats, centroids = cv2.connectedComponentsWithStats(255-img, connectivity=8)
+
         digit_rectangles = []
 
-        H, W = np.shape(img)
+        for label in range(1, labels_nbr):
+            component = img[labels == label]
 
-        for c in contours:
-            (x, y, w, h) = cv2.boundingRect(c)
+            x = stats[label][cv2.CC_STAT_LEFT]
+            y = stats[label][cv2.CC_STAT_TOP]
+            w = stats[label][cv2.CC_STAT_WIDTH]
+            h = stats[label][cv2.CC_STAT_HEIGHT]
 
-            if 0.15 <= float(w) / W < 0.25:
-                new_contour = True
+            if y / H > 0.3 and h / H >= 0.1:
+                new_rectangle = True
 
                 for k in range(len(digit_rectangles)):
                     [x_other, y_other, w_other, h_other] = digit_rectangles[k]
@@ -192,9 +195,9 @@ class DigitalDetector:
                         new_x2 = max(x + w, x_other + w_other)
                         new_y2 = max(y + h, y_other + h_other)
                         digit_rectangles[k] = (new_x1, new_y1, new_x2 - new_x1, new_y2 - new_y1)
-                        new_contour = False
+                        new_rectangle = False
 
-                if new_contour:
+                if new_rectangle:
                     digit_rectangles.append((x, y, w, h))
 
         return digit_rectangles
@@ -217,10 +220,17 @@ class DigitalDetector:
         segments_rectangles = []
 
         for (x, y, w, h) in digit_rectangles:
+            # Handle the case of ones
+            if w / W <= 0.1 and h / H > 0.3:
+                digits.append(1)
+                digits_position.append((x, int(0.4*H)))
+
+                continue
+
+            # Horizontal segments
             d = int(0.3 * w)
             binary_string = ""
 
-            # Horizontal segments
             for k in range(3):
                 x_segment = x + d
                 y_segment = y + int(k/2.0 * (h - d))
@@ -251,7 +261,7 @@ class DigitalDetector:
             # Decode the digit
             digit = self._decode_segments(binary_string)
             digits.append(digit)
-            digits_position.append((x + w//2, int(0.4*H)))
+            digits_position.append((x, int(0.4*H)))
 
         return digits, digits_position, segments_rectangles
 
