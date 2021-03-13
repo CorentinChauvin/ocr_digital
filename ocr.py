@@ -17,6 +17,5 @@ img = cv2.imread(image_path)
 detector = DigitalDetector()
 detector.detect(img)
 
-# TODO: fix screen segmentation
 # TODO: put the text on the original image
 # TODO: handle videos and live streams

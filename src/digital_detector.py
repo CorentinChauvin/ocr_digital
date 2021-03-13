@@ -26,11 +26,15 @@ class DigitalDetector:
         """
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         screen_img = self._crop_screen(gray_img)
+        screen_img = cv2.resize(screen_img, (96, 120))
         thresh_img = self._threshold_screen(screen_img)
 
         digit_rectangles = self._detect_digits(thresh_img)
         digits, digits_position, segments_rectangles = \
             self._detect_segments(thresh_img, digit_rectangles)
+
+        temperature = self._get_temperature(digits, digits_position)
+        print(temperature)
 
         # Debug display
         self._debug_img = cv2.cvtColor(thresh_img, cv2.COLOR_GRAY2RGB)
@@ -91,8 +95,12 @@ class DigitalDetector:
             p0 = approx[0]
             p1 = approx[1]
             p2 = approx[2]
-            l1 = np.linalg.norm(p0 - p1)
-            l2 = np.linalg.norm(p1 - p2)
+            e1 = (p0 - p1)[0]
+            e2 = (p2 - p1)[0]
+            l1 = np.linalg.norm(e1)
+            l2 = np.linalg.norm(e2)
+
+            angle = np.arccos(np.dot(e1, e2) / (l1 * l2))
 
             if l1 < l2:
                 l1, l2 = l2, l1
@@ -100,7 +108,10 @@ class DigitalDetector:
             if l2 < 10 or l1 / l2 > 1.4:
                 continue
 
-            # cv2.drawContours(img, [approx], -1, (0, 255, 0), 1)
+            if not (pi/2 - 0.1 <= angle <= pi/2 + 0.1):
+                continue
+
+            cv2.drawContours(img, [approx], -1, (0, 255, 0), 2)
             screen_rectangle = approx[:, 0, :]
 
             return screen_rectangle  # don't need to get dupplicates
@@ -139,8 +150,13 @@ class DigitalDetector:
         """
         Thresholds the screen image, and remove the edges
         """
+        screen_img = screen_img.copy()
+        blurred = cv2.GaussianBlur(screen_img, (15, 15), 1)
+        alpha = 1.5
+        sharpened = cv2.addWeighted(screen_img, 1 + alpha, blurred, -alpha, 0.0)
+
         thresh = cv2.adaptiveThreshold(
-            screen_img, 255,
+            sharpened, 255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY,
             19, 4
         )
@@ -161,8 +177,8 @@ class DigitalDetector:
             clean_connected(0, j, thresh)
             clean_connected(H-1, j, thresh)
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+        # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        # thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
 
         return thresh
 
@@ -183,7 +199,10 @@ class DigitalDetector:
             w = stats[label][cv2.CC_STAT_WIDTH]
             h = stats[label][cv2.CC_STAT_HEIGHT]
 
-            if y / H > 0.3 and h / H >= 0.1:
+            if y / H > 0.3 and h / H >= 0.05:
+                if h / H <= 0.1 and w/W <= 0.1:  # dot
+                    continue
+
                 new_rectangle = True
 
                 for k in range(len(digit_rectangles)):
@@ -228,8 +247,8 @@ class DigitalDetector:
                 continue
 
             # Horizontal segments
-            d = int(0.3 * w)
             binary_string = ""
+            d = int(0.3 * w)
 
             for k in range(3):
                 x_segment = x + d
@@ -244,6 +263,7 @@ class DigitalDetector:
                     binary_string =  "0" + binary_string
 
             # Vertical segments
+            d = int(0.4 * w)
             for k in range(2):
                 x_segment = x + int(k * (w - d))
 
@@ -304,4 +324,18 @@ class DigitalDetector:
         if value in integers:
             return integers.index(value)
         else:
-            return np.NaN  # FIXME
+            return np.NaN
+
+    def _get_temperature(self, digits, digits_position):
+        """
+        Returns the temperature indicated by the thermometer
+        """
+        digits = np.array(digits)
+        x = np.array(digits_position)[:, 0]
+        digits = digits[np.argsort(x)]
+
+        string = ""
+        for digit in digits:
+            string += str(digit)
+
+        return int(string) / 10
