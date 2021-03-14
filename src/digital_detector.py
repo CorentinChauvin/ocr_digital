@@ -1,9 +1,9 @@
 """
     Implementation of a simple digital digit detector for thermometers
 
-    Author: Corentin Chauvin-Hameau
-    Date: 2021
-    License: TODO
+    Author:  Corentin Chauvin-Hameau
+    Date:    2021
+    License: Apache-2.0 License
 """
 
 from math import atan2, degrees, pi, nan
@@ -14,15 +14,21 @@ import imutils
 
 class DigitalDetector:
     """
+    Simple digital digit detector for thermometer images
     """
-    def __init__(self):
-        pass
 
     #
     # Public member functions
     #
-    def detect_digits(self, img):
+    def detect_digits(self, img, display_debug=False):
         """
+        Detects digits on a thermometer image and returns the temperature
+
+        Args:
+            - img:           BGR image of the thermometer
+            - display_debug: Whether to display an image with debugging information
+        Returns:
+            - Temperature displayed by the thermometer (nan if not successful)
         """
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         screen_img = self._crop_screen(gray_img)
@@ -35,29 +41,30 @@ class DigitalDetector:
 
         temperature = self._get_temperature(digits, digits_position)
 
-        # Debug display
-        self._debug_img = cv2.cvtColor(thresh_img, cv2.COLOR_GRAY2RGB)
+        # Display debug image
+        if display_debug:
+            debug_img = cv2.cvtColor(thresh_img, cv2.COLOR_GRAY2RGB)
 
-        for (x, y, w, h) in digit_rectangles:
-            cv2.rectangle(self._debug_img, (x, y), (x+w, y+h), (0, 255, 0), 1)
+            for (x, y, w, h) in digit_rectangles:
+                cv2.rectangle(debug_img, (x, y), (x+w, y+h), (0, 255, 0), 1)
 
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        for k in range(len(digits)):
-            digit = digits[k]
-            position = digits_position[k]
-            self._debug_img = cv2.putText(self._debug_img, str(digit), position, font, 0.5, (0, 0, 255), 2, cv2.LINE_AA)
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            for k in range(len(digits)):
+                digit = digits[k]
+                position = digits_position[k]
+                debug_img = cv2.putText(debug_img, str(digit), position, font, 0.5, (0, 0, 255), 2, cv2.LINE_AA)
 
-        for segment in segments_rectangles:
-            cv2.rectangle(self._debug_img, segment[0], segment[1], (255, 0, 0), 1)
+            for segment in segments_rectangles:
+                cv2.rectangle(debug_img, segment[0], segment[1], (255, 0, 0), 1)
 
-        self._debug_img = cv2.resize(self._debug_img, (360, 288))
-        screen_img = cv2.resize(screen_img, (360, 288))
-        screen_img = cv2.cvtColor(screen_img, cv2.COLOR_GRAY2RGB)
-        double_image = np.hstack((screen_img, self._debug_img))
+            debug_img = cv2.resize(debug_img, (360, 288))
+            screen_img = cv2.resize(screen_img, (360, 288))
+            screen_img = cv2.cvtColor(screen_img, cv2.COLOR_GRAY2RGB)
+            double_image = np.hstack((screen_img, debug_img))
 
-        # cv2.imshow("Temperature: {}".format(temperature), double_image)
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+            cv2.imshow("Temperature: {}".format(temperature), double_image)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
 
         return temperature
 
@@ -167,7 +174,6 @@ class DigitalDetector:
         )
 
         H, W = np.shape(thresh)
-        # labels_nbr, labels = cv2.connectedComponents(255-thresh, connectivity=8)
         labels_nbr, labels, stats, centroids = cv2.connectedComponentsWithStats(255-thresh, connectivity=8)
 
         def clean_connected(i, j, thresh):
@@ -183,9 +189,6 @@ class DigitalDetector:
             clean_connected(0, j, thresh)
             clean_connected(H-1, j, thresh)
 
-        # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        # thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
-
         # Remove the dot
         for label in range(1, labels_nbr):
             x = stats[label][cv2.CC_STAT_LEFT]
@@ -193,7 +196,7 @@ class DigitalDetector:
             w = stats[label][cv2.CC_STAT_WIDTH]
             h = stats[label][cv2.CC_STAT_HEIGHT]
 
-            if y / H > 0.3 and h / H <= 0.1 and w/W <= 0.1:
+            if y / H > 0.3 and h / H <= 0.1 and w / W <= 0.1:
                     thresh[labels == label] = 255
 
         return thresh
@@ -216,33 +219,16 @@ class DigitalDetector:
             h = stats[label][cv2.CC_STAT_HEIGHT]
 
             if y / H > 0.3 and h / H >= 0.05:
-                # if h / H <= 0.1 and w/W <= 0.1:  # dot
-                #     continue
+                digit_rectangles.append((x, y, w, h))
 
-                new_rectangle = True
-
-                for k in range(len(digit_rectangles)):
-                    [x_other, y_other, w_other, h_other] = digit_rectangles[k]
-
-                    if x_other <= x + w/2.0 <= x_other + w_other:
-                        new_x1 = min(x, x_other)
-                        new_y1 = min(y, y_other)
-                        new_x2 = max(x + w, x_other + w_other)
-                        new_y2 = max(y + h, y_other + h_other)
-                        digit_rectangles[k] = (new_x1, new_y1, new_x2 - new_x1, new_y2 - new_y1)
-                        new_rectangle = False
-
-                if new_rectangle:
-                    digit_rectangles.append((x, y, w, h))
-
-        # Merge overlapping rectangles  # FIXME: simplify code
+        # Merge overlapping rectangles
         if digit_rectangles == []:
             return []
 
-        overlap = True
+        merged = True
 
-        while overlap:
-            overlap = False
+        while merged:
+            merged = False
             new_rectangles = [digit_rectangles[0]]
 
             for k in range(1, len(digit_rectangles)):
@@ -251,15 +237,16 @@ class DigitalDetector:
 
                 for l in range(len(new_rectangles)):
                     [x_other, y_other, w_other, h_other] = new_rectangles[l]
+                    overlap = (x < x_other+w_other and x_other < x+w) or (y > y_other+h_other and y_other > y+h)
 
-                    if (x < x_other+w_other and x_other < x+w) or (y > y_other+h_other and y_other > y+h):
+                    if overlap or x_other <= x + w/2.0 <= x_other + w_other:
                         new_x1 = min(x, x_other)
                         new_y1 = min(y, y_other)
                         new_x2 = max(x + w, x_other + w_other)
                         new_y2 = max(y + h, y_other + h_other)
                         new_rectangles[l] = (new_x1, new_y1, new_x2 - new_x1, new_y2 - new_y1)
                         new_rectangle = False
-                        overlap = True
+                        merged = True
 
                 if new_rectangle:
                     new_rectangles.append((x, y, w, h))
