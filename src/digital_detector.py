@@ -6,7 +6,7 @@
     License: TODO
 """
 
-from math import atan2, degrees, pi
+from math import atan2, degrees, pi, nan
 import numpy as np
 import cv2
 import imutils
@@ -21,7 +21,7 @@ class DigitalDetector:
     #
     # Public member functions
     #
-    def detect(self, img):
+    def detect_digits(self, img):
         """
         """
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -34,7 +34,6 @@ class DigitalDetector:
             self._detect_segments(thresh_img, digit_rectangles)
 
         temperature = self._get_temperature(digits, digits_position)
-        print(temperature)
 
         # Debug display
         self._debug_img = cv2.cvtColor(thresh_img, cv2.COLOR_GRAY2RGB)
@@ -52,9 +51,15 @@ class DigitalDetector:
             cv2.rectangle(self._debug_img, segment[0], segment[1], (255, 0, 0), 1)
 
         self._debug_img = cv2.resize(self._debug_img, (360, 288))
-        cv2.imshow('image', self._debug_img)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
+        screen_img = cv2.resize(screen_img, (360, 288))
+        screen_img = cv2.cvtColor(screen_img, cv2.COLOR_GRAY2RGB)
+        double_image = np.hstack((screen_img, self._debug_img))
+
+        # cv2.imshow("Temperature: {}".format(temperature), double_image)
+        # cv2.waitKey(0)
+        # cv2.destroyAllWindows()
+
+        return temperature
 
     #
     # Private member functions
@@ -162,7 +167,8 @@ class DigitalDetector:
         )
 
         H, W = np.shape(thresh)
-        labels_nbr, labels = cv2.connectedComponents(255-thresh, connectivity=8)
+        # labels_nbr, labels = cv2.connectedComponents(255-thresh, connectivity=8)
+        labels_nbr, labels, stats, centroids = cv2.connectedComponentsWithStats(255-thresh, connectivity=8)
 
         def clean_connected(i, j, thresh):
             if thresh[i, j] == 0:
@@ -179,6 +185,16 @@ class DigitalDetector:
 
         # kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         # thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+
+        # Remove the dot
+        for label in range(1, labels_nbr):
+            x = stats[label][cv2.CC_STAT_LEFT]
+            y = stats[label][cv2.CC_STAT_TOP]
+            w = stats[label][cv2.CC_STAT_WIDTH]
+            h = stats[label][cv2.CC_STAT_HEIGHT]
+
+            if y / H > 0.3 and h / H <= 0.1 and w/W <= 0.1:
+                    thresh[labels == label] = 255
 
         return thresh
 
@@ -200,8 +216,8 @@ class DigitalDetector:
             h = stats[label][cv2.CC_STAT_HEIGHT]
 
             if y / H > 0.3 and h / H >= 0.05:
-                if h / H <= 0.1 and w/W <= 0.1:  # dot
-                    continue
+                # if h / H <= 0.1 and w/W <= 0.1:  # dot
+                #     continue
 
                 new_rectangle = True
 
@@ -218,6 +234,37 @@ class DigitalDetector:
 
                 if new_rectangle:
                     digit_rectangles.append((x, y, w, h))
+
+        # Merge overlapping rectangles  # FIXME: simplify code
+        if digit_rectangles == []:
+            return []
+
+        overlap = True
+
+        while overlap:
+            overlap = False
+            new_rectangles = [digit_rectangles[0]]
+
+            for k in range(1, len(digit_rectangles)):
+                [x, y, w, h] = digit_rectangles[k]
+                new_rectangle = True
+
+                for l in range(len(new_rectangles)):
+                    [x_other, y_other, w_other, h_other] = new_rectangles[l]
+
+                    if (x < x_other+w_other and x_other < x+w) or (y > y_other+h_other and y_other > y+h):
+                        new_x1 = min(x, x_other)
+                        new_y1 = min(y, y_other)
+                        new_x2 = max(x + w, x_other + w_other)
+                        new_y2 = max(y + h, y_other + h_other)
+                        new_rectangles[l] = (new_x1, new_y1, new_x2 - new_x1, new_y2 - new_y1)
+                        new_rectangle = False
+                        overlap = True
+
+                if new_rectangle:
+                    new_rectangles.append((x, y, w, h))
+
+            digit_rectangles = new_rectangles[:]
 
         return digit_rectangles
 
@@ -268,11 +315,11 @@ class DigitalDetector:
                 x_segment = x + int(k * (w - d))
 
                 for l in range(2):
-                    y_segment = y + int(l * h / 2)
-                    if self._check_segment_state(img, x_segment, y_segment, d, h//2):
+                    y_segment = y + int(l * h / 2) + d//2
+                    if self._check_segment_state(img, x_segment, y_segment, d, h//2-d):
                         segments_rectangles.append([
                             (x_segment, y_segment),
-                            (x_segment + d, y_segment + h//2)
+                            (x_segment + d, y_segment + h//2-d)
                         ])
                         binary_string =  "1" + binary_string
                     else:
@@ -296,9 +343,15 @@ class DigitalDetector:
             - Whether the segment is switched on
         """
         black_pixels_nbr = np.count_nonzero(img[y:y+h, x:x+w] == 0)
-        ratio = float(black_pixels_nbr) / (h * w)
 
-        return ratio > 0.3
+        if h == 0 or w == 0:
+            return False
+        else:
+            ratio = float(black_pixels_nbr) / (h * w)
+            if h > w:  # vertical segment
+                return ratio > 0.25
+            else:  # horizontal segment
+                return ratio > 0.4
 
     def _decode_segments(self, binary_string):
         """
@@ -306,13 +359,18 @@ class DigitalDetector:
 
         Returns numpy.NaN if the digit couldn't be decoded
         """
+        # Case of faulty seven (sometimes one segment is wrongly detected)
+        if int(binary_string, 2) == int("001100101", 2):
+            return 7
+
+        # Normal case
         integers = [
             "01111101",
             "01100000",
             "00110111",
             "01100111",
             "01101010",
-            "01001010",
+            "01001111",
             "01011111",
             "01100001",
             "01111111",
@@ -324,7 +382,7 @@ class DigitalDetector:
         if value in integers:
             return integers.index(value)
         else:
-            return np.NaN
+            return nan
 
     def _get_temperature(self, digits, digits_position):
         """
@@ -338,4 +396,7 @@ class DigitalDetector:
         for digit in digits:
             string += str(digit)
 
-        return int(string) / 10
+        try:
+            return int(string) / 10
+        except ValueError:
+            return nan
